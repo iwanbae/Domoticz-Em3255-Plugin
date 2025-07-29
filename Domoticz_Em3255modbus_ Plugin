@@ -1,0 +1,135 @@
+#!/usr/bin/env python
+"""
+EM3255 Modbus Plugin for Domoticz
+Adapted from SDM120 plugin, updated for Schneider Electric iEM3255
+Author: ChatGPT based on user-provided register map
+"""
+
+import minimalmodbus
+import Domoticz
+import datetime
+import os
+
+class BasePlugin:
+    def __init__(self):
+        self.runInterval = 1
+        self.rs485 = ""
+        self.log_path = "/home/pi/em3255_log.csv"  # Ubah path ini jika diperlukan
+        return
+
+    def onStart(self):
+        Domoticz.Log("EM3255 Modbus plugin started")
+        self.runInterval = int(Parameters["Mode3"])
+
+        if 1 not in Devices:
+            Domoticz.Device(Name="Current L1", Unit=1, TypeName="Current (Single)", Used=1).Create()
+        if 2 not in Devices:
+            Domoticz.Device(Name="Current L2", Unit=2, TypeName="Current (Single)", Used=1).Create()
+        if 3 not in Devices:
+            Domoticz.Device(Name="Current L3", Unit=3, TypeName="Current (Single)", Used=1).Create()
+        if 4 not in Devices:
+            Domoticz.Device(Name="Current Avg", Unit=4, TypeName="Current (Single)", Used=1).Create()
+        if 5 not in Devices:
+            Domoticz.Device(Name="Voltage L-N Avg", Unit=5, TypeName="Voltage", Used=1).Create()
+        if 6 not in Devices:
+            Domoticz.Device(Name="Total Active Power", Unit=6, TypeName="Usage", Used=1).Create()
+        if 7 not in Devices:
+            Domoticz.Device(Name="Total Reactive Power", Unit=7, TypeName="Usage", Used=0).Create()
+        if 8 not in Devices:
+            Domoticz.Device(Name="Total Apparent Power", Unit=8, TypeName="Usage", Used=0).Create()
+        if 9 not in Devices:
+            Domoticz.Device(Name="Power Factor", Unit=9, Type=243, Subtype=31, Used=0).Create()
+        if 10 not in Devices:
+            Domoticz.Device(Name="Frequency", Unit=10, Type=243, Subtype=8, Used=0).Create()
+        if 11 not in Devices:
+            Domoticz.Device(Name="Total Energy Import", Unit=11, Type=243, Subtype=29, Used=1).Create()
+
+    def onStop(self):
+        Domoticz.Log("EM3255 Modbus plugin stopped")
+
+    def onHeartbeat(self):
+        self.runInterval -= 1
+        if self.runInterval <= 0:
+            try:
+                self.rs485 = minimalmodbus.Instrument(Parameters["SerialPort"], int(Parameters["Mode2"]))
+                self.rs485.serial.baudrate = int(Parameters["Mode1"])
+                self.rs485.serial.bytesize = 8
+                self.rs485.serial.parity = minimalmodbus.serial.PARITY_NONE
+                self.rs485.serial.stopbits = 1
+                self.rs485.serial.timeout = 1
+                self.rs485.serial.exclusive = True
+                self.rs485.debug = False
+                self.rs485.mode = minimalmodbus.MODE_RTU
+                self.rs485.close_port_after_each_call = True
+
+                current_l1 = self.rs485.read_float(0, 4, 2)
+                current_l2 = self.rs485.read_float(2, 4, 2)
+                current_l3 = self.rs485.read_float(4, 4, 2)
+                current_avg = self.rs485.read_float(10, 4, 2)
+                voltage_ln_avg = self.rs485.read_float(36, 4, 2)
+                active_power = self.rs485.read_float(60, 4, 2)
+                reactive_power = self.rs485.read_float(68, 4, 2)
+                apparent_power = self.rs485.read_float(76, 4, 2)
+                power_factor = self.rs485.read_float(84, 4, 2)
+                frequency = self.rs485.read_float(110, 4, 2)
+                energy_kwh = self.rs485.read_float(45100, 4, 2)
+
+                self.rs485.serial.close()
+            except Exception as e:
+                Domoticz.Heartbeat(1)
+                self.runInterval = 1
+                Domoticz.Log("**** EM3255 Modbus connection error: {} ****".format(e))
+            else:
+                Devices[1].Update(0, str(round(current_l1, 2)))
+                Devices[2].Update(0, str(round(current_l2, 2)))
+                Devices[3].Update(0, str(round(current_l3, 2)))
+                Devices[4].Update(0, str(round(current_avg, 2)))
+                Devices[5].Update(0, str(round(voltage_ln_avg, 1)))
+                Devices[6].Update(0, str(round(active_power, 3)))
+                Devices[7].Update(0, str(round(reactive_power, 3)))
+                Devices[8].Update(0, str(round(apparent_power, 3)))
+                Devices[9].Update(0, str(round(power_factor, 3)))
+                Devices[10].Update(0, str(round(frequency, 2)))
+                Devices[11].Update(0, str(round(energy_kwh, 3)))
+
+                # Optional: write to CSV log file
+                try:
+                    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    log_line = f"{now},{current_l1:.2f},{voltage_ln_avg:.1f},{active_power:.3f},{energy_kwh:.3f}\n"
+                    with open(self.log_path, "a") as f:
+                        f.write(log_line)
+                except Exception as log_err:
+                    Domoticz.Log(f"[LogError] Failed to write to log: {log_err}")
+
+                self.runInterval = int(Parameters["Mode3"])
+                Domoticz.Heartbeat(10)
+
+                if Parameters["Mode6"] == 'Debug':
+                    Domoticz.Log("EM3255 Modbus Data")
+                    Domoticz.Log(f"Current L1: {current_l1:.2f} A")
+                    Domoticz.Log(f"Current L2: {current_l2:.2f} A")
+                    Domoticz.Log(f"Current L3: {current_l3:.2f} A")
+                    Domoticz.Log(f"Current Avg: {current_avg:.2f} A")
+                    Domoticz.Log(f"Voltage L-N Avg: {voltage_ln_avg:.1f} V")
+                    Domoticz.Log(f"Active Power: {active_power:.3f} kW")
+                    Domoticz.Log(f"Reactive Power: {reactive_power:.3f} kVAR")
+                    Domoticz.Log(f"Apparent Power: {apparent_power:.3f} kVA")
+                    Domoticz.Log(f"Power Factor: {power_factor:.3f}")
+                    Domoticz.Log(f"Frequency: {frequency:.2f} Hz")
+                    Domoticz.Log(f"Total Energy Import: {energy_kwh:.3f} kWh")
+
+# Global plugin instance
+global _plugin
+_plugin = BasePlugin()
+
+def onStart():
+    global _plugin
+    _plugin.onStart()
+
+def onStop():
+    global _plugin
+    _plugin.onStop()
+
+def onHeartbeat():
+    global _plugin
+    _plugin.onHeartbeat()
